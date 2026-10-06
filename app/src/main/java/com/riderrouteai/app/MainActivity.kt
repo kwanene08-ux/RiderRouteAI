@@ -48,8 +48,8 @@ class MainActivity : ComponentActivity() {
     private var pickupAddress: Address? = null
     private var dropoffAddress: Address? = null
     private var lastFloodReport: String = "ยังไม่ได้ตรวจข้อมูลน้ำท่วม"
-    private val currentVersionCode = 7
-    private val currentVersionName = "0.6.0"
+    private val currentVersionCode = 8
+    private val currentVersionName = "0.7.0"
     private val updateManifestUrl = "https://raw.githubusercontent.com/kwanene08-ux/RiderRouteAI/main/latest.json"
 
     private val picker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
