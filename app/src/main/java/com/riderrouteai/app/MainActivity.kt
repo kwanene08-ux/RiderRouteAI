@@ -11,8 +11,12 @@ import androidx.core.content.FileProvider
 import org.json.JSONObject
 import android.location.Address
 import android.location.Geocoder
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Looper
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -47,9 +51,20 @@ class MainActivity : ComponentActivity() {
     private var dropoff: String? = null
     private var pickupAddress: Address? = null
     private var dropoffAddress: Address? = null
+
+    private var currentLocation: Location? = null
+    private var locationManager: LocationManager? = null
+
+    private val locationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            currentLocation = location
+            updateLocationStatus()
+        }
+    }
+
     private var lastFloodReport: String = "ยังไม่ได้ตรวจข้อมูลน้ำท่วม"
-    private val currentVersionCode = 8
-    private val currentVersionName = "0.7.0"
+    private val currentVersionCode = 9
+    private val currentVersionName = "0.7.1"
     private val updateManifestUrl = "https://raw.githubusercontent.com/kwanene08-ux/RiderRouteAI/main/latest.json"
 
     private val picker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -61,13 +76,25 @@ class MainActivity : ComponentActivity() {
 
     private val locationPermission = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { updateLocationStatus() }
+    ) {
+        if (hasLocation()) startLocationUpdates()
+        updateLocationStatus()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
         updateLocationStatus()
-        if (!hasLocation()) locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        if (!hasLocation()) {
+            locationPermission.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        } else {
+            startLocationUpdates()
+        }
         refreshFloodData()
     }
 
@@ -76,12 +103,12 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 40, 32, 32)
         }
-        val title = TextView(this).apply { text = "Rider Route AI  •  V0.6.0"; textSize = 26f }
+        val title = TextView(this).apply { text = "Rider Route AI  •  V0.7.1"; textSize = 26f }
         status = TextView(this).apply { textSize = 16f; setPadding(0, 18, 0, 18) }
         val capture = Button(this).apply { text = "📸 เลือกแคปงาน" }
         preview = ImageView(this).apply { adjustViewBounds = true; minimumHeight = 260 }
         result = TextView(this).apply { textSize = 17f; setPadding(0, 18, 0, 18) }
-        analyze = Button(this).apply { text = "🗺️ วิเคราะห์ต้นทาง → ปลายทาง"; isEnabled = false }
+        analyze = Button(this).apply { text = "🗺️ วิเคราะห์ 3 จุด → จุดรับ → จุดส่ง"; isEnabled = false }
         navigate = Button(this).apply { text = "🧭 เปิดนำทางใน Google Maps"; isEnabled = false }
         floodButton = Button(this).apply { text = "🌊 ตรวจน้ำท่วมล่าสุดของวันนี้" }
         updateButton = Button(this).apply { text = "🔄 ตรวจสอบอัปเดต V$currentVersionName" }
@@ -125,8 +152,8 @@ class MainActivity : ComponentActivity() {
 
                     result.text = buildString {
                         append("🧠 OCR อ่านได้ครบ\n\n")
-                        append("📍 ต้นทาง: ").append(pickup ?: "ยังแยกไม่ได้").append("\n")
-                        append("🏁 ปลายทาง: ").append(dropoff ?: "ยังแยกไม่ได้").append("\n\n")
+                        append("📦 จุดรับ: ").append(pickup ?: "ยังแยกไม่ได้").append("\n")
+                        append("🏁 จุดส่ง: ").append(dropoff ?: "ยังแยกไม่ได้").append("\n\n")
                         append("📄 ข้อความทั้งหมดจาก OCR:\n")
                         append(if (fullText.isBlank()) "ไม่พบข้อความ" else fullText)
                     }
@@ -188,33 +215,201 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun analyzeAddresses() {
-        val from = pickup?.trim(); val to = dropoff?.trim()
+        val from = pickup?.trim()
+        val to = dropoff?.trim()
+
         if (from.isNullOrBlank() || to.isNullOrBlank()) return
-        status.text = "🔎 กำลังค้นหาพิกัดต้นทางและปลายทาง..."; analyze.isEnabled = false
+
+        val current = currentLocation
+        if (current == null) {
+            status.text = "⚠️ ยังไม่มีตำแหน่ง GPS ปัจจุบัน • รอสัญญาณ GPS แล้วกดวิเคราะห์อีกครั้ง"
+            return
+        }
+
+        status.text = "🔎 กำลังค้นหาพิกัด 3 จุด..."
+        analyze.isEnabled = false
+        navigate.isEnabled = false
+
         Thread {
-            val fromAddress = geocode(from); val toAddress = geocode(to)
-            runOnUiThread {
-                pickupAddress = fromAddress; dropoffAddress = toAddress
-                val out = StringBuilder()
-                out.append("📍 ต้นทาง\n").append(from).append("\n")
-                if (fromAddress != null) out.append("พิกัด: ${fmt(fromAddress.latitude)}, ${fmt(fromAddress.longitude)}\n") else out.append("พิกัด: หาไม่พบ\n")
-                out.append("\n🏁 ปลายทาง\n").append(to).append("\n")
-                if (toAddress != null) out.append("พิกัด: ${fmt(toAddress.latitude)}, ${fmt(toAddress.longitude)}\n") else out.append("พิกัด: หาไม่พบ\n")
+            val currentSnapshot = Location(current)
+            val currentAddress = reverseGeocode(currentSnapshot)
+            val fromAddress = geocode(from)
+            val toAddress = geocode(to)
+
+            val floodReport =
                 if (fromAddress != null && toAddress != null) {
-                    val meters = FloatArray(1)
-                    android.location.Location.distanceBetween(fromAddress.latitude, fromAddress.longitude, toAddress.latitude, toAddress.longitude, meters)
-                    val km = meters[0] / 1000.0
-                    val eta = ((km / 25.0) * 60.0).roundToInt().coerceAtLeast(1)
-                    out.append("\n📏 ระยะเส้นตรงโดยประมาณ: ${String.format(Locale.US, "%.1f", km)} กม.")
-                    out.append("\n⏱️ เวลาเบื้องต้นที่ 25 กม./ชม.: ~${eta} นาที")
-                    out.append("\n⚠️ ยังไม่ใช่ระยะทางตามถนนจริง และยังไม่รวมรถติด")
-                    navigate.isEnabled = true; status.text = "✅ หา 2 พิกัดแล้ว • พร้อมเปิดนำทาง"
-                } else status.text = "⚠️ หาได้ไม่ครบ 2 พิกัด • ลองแก้ข้อความที่ OCR อ่าน"
-                if (fromAddress != null && toAddress != null) out.append("\n\n").append(routeFloodRisk(from, to))
-                result.text = out.toString(); analyze.isEnabled = true
+                    routeFloodRisk(
+                        currentSnapshot,
+                        currentAddress,
+                        fromAddress,
+                        toAddress,
+                        from,
+                        to
+                    )
+                } else {
+                    "🌊 น้ำท่วม\n⚪ ยังประเมินเส้นทางไม่ได้ เพราะหาพิกัดจุดรับ/จุดส่งไม่ครบ"
+                }
+
+            runOnUiThread {
+                pickupAddress = fromAddress
+                dropoffAddress = toAddress
+
+                val out = StringBuilder()
+
+                out.append("📍 จุดที่อยู่ปัจจุบัน\n")
+                out.append(formatAddressBlock(currentAddress, "กำลังหาที่อยู่จาก GPS"))
+                    .append("\n")
+                out.append("พิกัด: ")
+                    .append(fmt(currentSnapshot.latitude))
+                    .append(", ")
+                    .append(fmt(currentSnapshot.longitude))
+                    .append("\n")
+
+                out.append("\n📦 จุดรับ\n")
+                out.append(formatAddressBlock(fromAddress, from))
+                    .append("\n")
+                if (fromAddress != null) {
+                    out.append("พิกัด: ")
+                        .append(fmt(fromAddress.latitude))
+                        .append(", ")
+                        .append(fmt(fromAddress.longitude))
+                        .append("\n")
+                } else {
+                    out.append("พิกัด: หาไม่พบ\n")
+                }
+
+                out.append("\n🏁 จุดส่ง\n")
+                out.append(formatAddressBlock(toAddress, to))
+                    .append("\n")
+                if (toAddress != null) {
+                    out.append("พิกัด: ")
+                        .append(fmt(toAddress.latitude))
+                        .append(", ")
+                        .append(fmt(toAddress.longitude))
+                        .append("\n")
+                } else {
+                    out.append("พิกัด: หาไม่พบ\n")
+                }
+
+                if (fromAddress != null && toAddress != null) {
+                    val leg1Km = distanceKm(
+                        currentSnapshot.latitude,
+                        currentSnapshot.longitude,
+                        fromAddress.latitude,
+                        fromAddress.longitude
+                    )
+
+                    val leg2Km = distanceKm(
+                        fromAddress.latitude,
+                        fromAddress.longitude,
+                        toAddress.latitude,
+                        toAddress.longitude
+                    )
+
+                    val totalKm = leg1Km + leg2Km
+                    val leg1Eta = etaMinutes(leg1Km)
+                    val leg2Eta = etaMinutes(leg2Km)
+                    val totalEta = leg1Eta + leg2Eta
+
+                    out.append("\n━━━━━━━━━━━━━━━━\n")
+                    out.append("🛵 เส้นทางไปจุดรับ\n")
+                    out.append("ระยะทาง: ")
+                        .append(oneDecimal(leg1Km))
+                        .append(" กม.\n")
+                    out.append("เวลาโดยประมาณ: ")
+                        .append(leg1Eta)
+                        .append(" นาที\n")
+
+                    out.append("\n📦 จากจุดรับ → จุดส่ง\n")
+                    out.append("ระยะทาง: ")
+                        .append(oneDecimal(leg2Km))
+                        .append(" กม.\n")
+                    out.append("เวลาโดยประมาณ: ")
+                        .append(leg2Eta)
+                        .append(" นาที\n")
+
+                    out.append("\n📊 รวมทั้งหมด\n")
+                    out.append("ระยะทาง: ")
+                        .append(oneDecimal(totalKm))
+                        .append(" กม.\n")
+                    out.append("เวลาโดยประมาณ: ")
+                        .append(totalEta)
+                        .append(" นาที\n")
+
+                    out.append("\n⚠️ ระยะทางด้านบนเป็นระยะเส้นตรงโดยประมาณ ไม่ใช่ระยะถนนจริง\n")
+                    out.append("⏱️ เวลาใช้อัตราเฉลี่ย 25 กม./ชม. และยังไม่รวมรถติด\n")
+
+                    navigate.isEnabled = true
+                    status.text = "✅ วิเคราะห์ 3 จุดเสร็จแล้ว • GPS ปัจจุบันพร้อมใช้งาน"
+                } else {
+                    out.append("\n⚠️ หาได้ไม่ครบ 3 พิกัด • ตรวจข้อความ OCR หรือสถานที่อีกครั้ง")
+                    status.text = "⚠️ หา GPS/จุดรับ/จุดส่งได้ไม่ครบ"
+                }
+
+                out.append("\n\n").append(floodReport)
+
+                result.text = out.toString()
+                analyze.isEnabled = !pickup.isNullOrBlank() && !dropoff.isNullOrBlank()
             }
         }.start()
     }
+
+    @Suppress("DEPRECATION")
+    private fun reverseGeocode(location: Location): Address? {
+        if (!Geocoder.isPresent()) return null
+        return try {
+            Geocoder(this, Locale.forLanguageTag("th-TH"))
+                .getFromLocation(location.latitude, location.longitude, 1)
+                ?.firstOrNull()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun formatAddressBlock(address: Address?, fallback: String): String {
+        if (address == null) return fallback
+
+        val line = address.getAddressLine(0)?.trim().orEmpty()
+        val province = address.adminArea?.trim().orEmpty()
+        val district = (address.subAdminArea ?: address.locality)?.trim().orEmpty()
+        val subdistrict = address.subLocality?.trim().orEmpty()
+
+        val areaLine = if (province.contains("กรุงเทพ", ignoreCase = true)) {
+            listOf(
+                province.takeIf { it.isNotBlank() }?.let { "จังหวัด$it" },
+                subdistrict.takeIf { it.isNotBlank() }?.let { "แขวง$it" },
+                district.takeIf { it.isNotBlank() }?.let { "เขต$it" }
+            ).filterNotNull().distinct().joinToString(" ")
+        } else {
+            listOf(
+                province.takeIf { it.isNotBlank() }?.let { "จังหวัด$it" },
+                subdistrict.takeIf { it.isNotBlank() }?.let { "ตำบล$it" },
+                district.takeIf { it.isNotBlank() }?.let { "อำเภอ$it" }
+            ).filterNotNull().distinct().joinToString(" ")
+        }
+
+        return listOf(line, areaLine)
+            .filter { it.isNotBlank() }
+            .joinToString("\n")
+            .ifBlank { fallback }
+    }
+
+    private fun distanceKm(
+        lat1: Double,
+        lon1: Double,
+        lat2: Double,
+        lon2: Double
+    ): Double {
+        val meters = FloatArray(1)
+        Location.distanceBetween(lat1, lon1, lat2, lon2, meters)
+        return meters[0] / 1000.0
+    }
+
+    private fun etaMinutes(km: Double): Int =
+        ((km / 25.0) * 60.0).roundToInt().coerceAtLeast(1)
+
+    private fun oneDecimal(value: Double): String =
+        String.format(Locale.US, "%.1f", value)
 
     @Suppress("DEPRECATION")
     private fun geocode(query: String): Address? {
@@ -404,40 +599,180 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun routeFloodRisk(from: String, to: String): String {
-        val combined = normalizeForMatch("$from $to")
+    private fun routeFloodRisk(
+        current: Location,
+        currentAddress: Address?,
+        pickupAddress: Address,
+        dropoffAddress: Address,
+        pickupRaw: String,
+        dropoffRaw: String
+    ): String {
         val today = bangkokBuddhistDate()
-        return try {
-            val rows = listOf(
+
+        val rows = try {
+            val urls = listOf(
                 "https://weather.bangkok.go.th/flood/SummaryStation/IndexSummaryStation",
                 "https://weather.bangkok.go.th/LastData/IndexFlood"
-            ).asSequence().flatMap { urlString ->
-                try { parseRows(download(urlString)).asSequence() } catch (_: Exception) { emptySequence() }
-            }.filter { it.any { cell -> cell.contains(today) } }.toList()
-            val wet = rows.filter { row -> row.any { it.contains("น้ำท่วม") } }
-            if (rows.isEmpty()) return "🧭 ความเสี่ยงน้ำท่วมเส้นทาง: ⚪ ไม่มีข้อมูลของวันนี้ที่ใช้ประเมินได้\n⚠️ ไม่ได้แปลว่าถนนแห้ง"
-            val tokens = combined.split(" ").filter { it.length >= 4 }.distinct()
-            val hits = wet.filter { row -> tokens.any { normalizeForMatch(row.joinToString(" ")).contains(it) } }
-            val score = when {
-                hits.any { it.any { cell -> cell.contains("น้ำท่วม") && !cell.contains("น้ำท่วมเล็กน้อย") } } -> 90
-                hits.isNotEmpty() -> 60
-                else -> 10
-            }
-            val level = when { score >= 90 -> "🔴 สูง"; score >= 60 -> "🟡 ระวัง"; else -> "🟢 ไม่พบจุดท่วมที่ชื่อถนนตรงกับต้นทาง/ปลายทาง" }
-            buildString {
-                append("🧭 ความเสี่ยงน้ำท่วมเส้นทาง: $level ($score/100)\n")
-                if (hits.isNotEmpty()) {
-                    append("จุดที่ชื่อถนนตรง/ใกล้เคียง: ${hits.size} จุด\n")
-                    hits.take(5).forEach { row ->
-                        val road = row.firstOrNull { it.contains("ถ.") || it.contains("ถนน") || it.contains("ซอย") } ?: row.getOrNull(1) ?: "ไม่ทราบถนน"
-                        val depth = row.firstOrNull { it.matches(Regex("\\d+(?:\\.\\d+)?")) } ?: "-"
-                        append("• $road | $depth ซม.\n")
+            )
+
+            var latestRows: List<List<String>> = emptyList()
+
+            for (urlString in urls) {
+                try {
+                    val parsed = parseRows(download(urlString))
+                    val currentRows = parsed.filter { row ->
+                        row.any { cell -> cell.contains(today) }
                     }
-                } else append("ไม่พบชื่อถนนที่ตรงกับข้อความต้นทาง/ปลายทางในสถานีท่วมวันนี้\n")
-                append("⚠️ คะแนนนี้เป็นการจับคู่ชื่อถนน ไม่ใช่เส้นทางจริงจากแผนที่ และไม่มีข้อมูลตรง ≠ ถนนแห้ง")
+                    if (currentRows.isNotEmpty()) {
+                        latestRows = currentRows
+                        break
+                    }
+                } catch (_: Exception) {
+                }
             }
+
+            latestRows
         } catch (_: Exception) {
-            "🧭 ความเสี่ยงน้ำท่วมเส้นทาง: ⚪ ตรวจไม่ได้ตอนนี้\n⚠️ ไม่มีข้อมูลสด จึงไม่สรุปว่าถนนปลอดน้ำ"
+            emptyList()
+        }
+
+        if (rows.isEmpty()) {
+            return buildString {
+                append("🌊 น้ำท่วม\n")
+                append("⚪ ไม่มีข้อมูลสถานีของวันที่ $today ให้ประเมินได้\n")
+                append("⚠️ ไม่มีข้อมูล ≠ ถนนแห้ง")
+            }
+        }
+
+        val wet = rows.filter { row ->
+            row.any { cell ->
+                cell.contains("น้ำท่วม")
+            }
+        }
+
+        val nowText = rows.mapNotNull {
+            it.firstOrNull {
+                it.matches(Regex("\\d{2}/\\d{2}/\\d{4} \\d{2}:\\d{2}"))
+            }
+        }.maxOrNull() ?: "ไม่ทราบ"
+
+        fun hitStations(vararg texts: String): List<List<String>> {
+            val query = texts.joinToString(" ")
+            val normalizedQuery = normalizeForMatch(query).replace(" ", "")
+
+            if (normalizedQuery.length < 6) return emptyList()
+
+            return wet.filter { row ->
+                val stationText = normalizeForMatch(row.joinToString(" "))
+                    .replace(" ", "")
+
+                if (stationText.isBlank()) {
+                    false
+                } else {
+                    val maxN = minOf(12, normalizedQuery.length)
+                    var matched = false
+
+                    for (n in maxN downTo 6) {
+                        var i = 0
+                        while (i + n <= normalizedQuery.length) {
+                            val piece = normalizedQuery.substring(i, i + n)
+                            if (stationText.contains(piece)) {
+                                matched = true
+                                break
+                            }
+                            i++
+                        }
+                        if (matched) break
+                    }
+
+                    matched
+                }
+            }.distinctBy { it.joinToString("|") }
+        }
+
+        fun stationLine(row: List<String>): String {
+            val road = row.firstOrNull {
+                it.contains("ถ.") ||
+                    it.contains("ถนน") ||
+                    it.contains("ซอย")
+            } ?: row.getOrNull(1) ?: "ไม่ทราบถนน"
+
+            val time = row.firstOrNull {
+                it.matches(Regex("\\d{2}/\\d{2}/\\d{4} \\d{2}:\\d{2}"))
+            } ?: "ไม่ทราบเวลา"
+
+            val depth = row.firstOrNull {
+                it.matches(Regex("\\d+(?:\\.\\d+)?"))
+            } ?: "-"
+
+            return "• $road | $depth ซม. | $time"
+        }
+
+        val currentText = buildString {
+            currentAddress?.getAddressLine(0)?.let { append(it).append(" ") }
+            currentAddress?.adminArea?.let { append(it).append(" ") }
+            currentAddress?.subAdminArea?.let { append(it).append(" ") }
+            currentAddress?.locality?.let { append(it).append(" ") }
+            currentAddress?.subLocality?.let { append(it).append(" ") }
+            append(fmt(current.latitude))
+            append(" ")
+            append(fmt(current.longitude))
+        }
+
+        val leg1Hits = hitStations(
+            currentText,
+            pickupRaw,
+            formatAddressBlock(pickupAddress, pickupRaw)
+        )
+
+        val leg2Hits = hitStations(
+            formatAddressBlock(pickupAddress, pickupRaw),
+            pickupRaw,
+            formatAddressBlock(dropoffAddress, dropoffRaw),
+            dropoffRaw
+        )
+
+        return buildString {
+            append("🌊 น้ำท่วมแบบสดจากข้อมูลสถานี กทม.\n")
+            append("🕒 เวลาอัปเดตล่าสุดที่อ่านได้: $nowText\n")
+            append("📡 สถานีที่อ่านได้วันนี้: ${rows.size} จุด\n\n")
+
+            append("🛵 ไปจุดรับ: ")
+            if (leg1Hits.isEmpty()) {
+                append("🟢 ไม่พบสถานีท่วมที่จับคู่กับชื่อถนน/พื้นที่ของช่วงนี้\n")
+            } else {
+                append("🔴 พบ ${leg1Hits.size} จุดที่ชื่อถนน/พื้นที่จับคู่ได้\n")
+                leg1Hits.take(5).forEach { row ->
+                    append(stationLine(row)).append("\n")
+                }
+            }
+
+            append("\n📦 จุดรับ → จุดส่ง: ")
+            if (leg2Hits.isEmpty()) {
+                append("🟢 ไม่พบสถานีท่วมที่จับคู่กับชื่อถนน/พื้นที่ของช่วงนี้\n")
+            } else {
+                append("🔴 พบ ${leg2Hits.size} จุดที่ชื่อถนน/พื้นที่จับคู่ได้\n")
+                leg2Hits.take(5).forEach { row ->
+                    append(stationLine(row)).append("\n")
+                }
+            }
+
+            append("\n📍 จุดน้ำท่วมที่ กทม. รายงานล่าสุด\n")
+
+            if (wet.isEmpty()) {
+                append("🟢 ยังไม่พบสถานีที่สถานะเป็นน้ำท่วมในข้อมูลวันนี้\n")
+            } else {
+                wet.take(15).forEach { row ->
+                    append(stationLine(row)).append("\n")
+                }
+                if (wet.size > 15) {
+                    append("• และอีก ${wet.size - 15} จุด\n")
+                }
+            }
+
+            append("\n⚠️ การจับคู่เส้นทางใช้ชื่อถนน/ข้อความจากที่อยู่ เพราะข้อมูลสถานีที่แอปอ่านได้ไม่มีเส้นเรขาคณิตของถนนจริง\n")
+            append("⚠️ ไม่พบสถานีที่จับคู่ ≠ ถนนแห้ง\n")
+            append("แหล่งข้อมูล: สำนักการระบายน้ำ กรุงเทพมหานคร")
         }
     }
 
@@ -454,6 +789,78 @@ class MainActivity : ComponentActivity() {
 
     private fun stripHtml(value: String): String = URLDecoder.decode(value.replace(Regex("<[^>]+>"), " ").replace("&nbsp;", " ").replace("&amp;", "&"), "UTF-8").replace(Regex("\\s+"), " ").trim()
     private fun fmt(v: Double) = String.format(Locale.US, "%.6f", v)
-    private fun hasLocation() = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-    private fun updateLocationStatus() { status.text = if (hasLocation()) "📍 GPS: พร้อมใช้งาน" else "📍 GPS: ต้องอนุญาตตำแหน่ง" }
+    private fun hasLocation(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val coarse = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        return fine || coarse
+    }
+
+    private fun startLocationUpdates() {
+        if (!hasLocation()) return
+
+        try {
+            locationManager =
+                getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
+            val providers = listOf(
+                LocationManager.GPS_PROVIDER,
+                LocationManager.NETWORK_PROVIDER
+            )
+
+            for (provider in providers) {
+                try {
+                    if (locationManager?.isProviderEnabled(provider) == true) {
+                        locationManager?.getLastKnownLocation(provider)?.let {
+                            currentLocation = it
+                        }
+
+                        locationManager?.requestLocationUpdates(
+                            provider,
+                            2000L,
+                            5f,
+                            locationListener,
+                            Looper.getMainLooper()
+                        )
+                    }
+                } catch (_: SecurityException) {
+                }
+            }
+
+            updateLocationStatus()
+        } catch (_: Exception) {
+            status.text = "⚠️ เริ่มติดตาม GPS ไม่สำเร็จ"
+        }
+    }
+
+    private fun stopLocationUpdates() {
+        try {
+            locationManager?.removeUpdates(locationListener)
+        } catch (_: SecurityException) {
+        }
+        locationManager = null
+    }
+
+    private fun updateLocationStatus() {
+        status.text = when {
+            !hasLocation() ->
+                "📍 GPS: ต้องอนุญาตตำแหน่ง"
+            currentLocation == null ->
+                "📍 GPS: พร้อม • กำลังรอตำแหน่งปัจจุบัน"
+            else ->
+                "📍 GPS: พร้อม • กำลังติดตามตำแหน่งปัจจุบัน"
+        }
+    }
+
+    override fun onDestroy() {
+        stopLocationUpdates()
+        super.onDestroy()
+    }
 }

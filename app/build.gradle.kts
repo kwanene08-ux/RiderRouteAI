@@ -11,8 +11,8 @@ android {
         applicationId = "com.riderrouteai.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.7.0"
+        versionCode = 9
+        versionName = "0.7.1"
     }
 
     compileOptions {
