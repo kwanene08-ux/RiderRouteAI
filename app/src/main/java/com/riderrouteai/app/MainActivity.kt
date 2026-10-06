@@ -63,8 +63,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private var lastFloodReport: String = "ยังไม่ได้ตรวจข้อมูลน้ำท่วม"
-    private val currentVersionCode = 9
-    private val currentVersionName = "0.7.1"
+    private val currentVersionCode = 10
+    private val currentVersionName = "0.8.0"
     private val updateManifestUrl = "https://raw.githubusercontent.com/kwanene08-ux/RiderRouteAI/main/latest.json"
 
     private val picker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -250,6 +250,30 @@ class MainActivity : ComponentActivity() {
                     "🌊 น้ำท่วม\n⚪ ยังประเมินเส้นทางไม่ได้ เพราะหาพิกัดจุดรับ/จุดส่งไม่ครบ"
                 }
 
+            val leg1Route =
+                if (fromAddress != null) {
+                    fetchRoadRoute(
+                        currentSnapshot.latitude,
+                        currentSnapshot.longitude,
+                        fromAddress.latitude,
+                        fromAddress.longitude
+                    )
+                } else {
+                    null
+                }
+
+            val leg2Route =
+                if (fromAddress != null && toAddress != null) {
+                    fetchRoadRoute(
+                        fromAddress.latitude,
+                        fromAddress.longitude,
+                        toAddress.latitude,
+                        toAddress.longitude
+                    )
+                } else {
+                    null
+                }
+
             runOnUiThread {
                 pickupAddress = fromAddress
                 dropoffAddress = toAddress
@@ -291,42 +315,36 @@ class MainActivity : ComponentActivity() {
                     out.append("พิกัด: หาไม่พบ\n")
                 }
 
-                if (fromAddress != null && toAddress != null) {
-                    val leg1Km = distanceKm(
-                        currentSnapshot.latitude,
-                        currentSnapshot.longitude,
-                        fromAddress.latitude,
-                        fromAddress.longitude
-                    )
+                out.append("\n━━━━━━━━━━━━━━━━\n")
 
-                    val leg2Km = distanceKm(
-                        fromAddress.latitude,
-                        fromAddress.longitude,
-                        toAddress.latitude,
-                        toAddress.longitude
-                    )
-
-                    val totalKm = leg1Km + leg2Km
-                    val leg1Eta = etaMinutes(leg1Km)
-                    val leg2Eta = etaMinutes(leg2Km)
-                    val totalEta = leg1Eta + leg2Eta
-
-                    out.append("\n━━━━━━━━━━━━━━━━\n")
+                if (leg1Route != null) {
                     out.append("🛵 เส้นทางไปจุดรับ\n")
                     out.append("ระยะทาง: ")
-                        .append(oneDecimal(leg1Km))
+                        .append(oneDecimal(leg1Route.first))
                         .append(" กม.\n")
                     out.append("เวลาโดยประมาณ: ")
-                        .append(leg1Eta)
+                        .append(leg1Route.second)
                         .append(" นาที\n")
+                } else {
+                    out.append("🛵 เส้นทางไปจุดรับ\n")
+                    out.append("⚠️ คำนวณระยะทางถนนจริงไม่ได้\n")
+                }
 
-                    out.append("\n📦 จากจุดรับ → จุดส่ง\n")
+                out.append("\n📦 จากจุดรับ → จุดส่ง\n")
+                if (leg2Route != null) {
                     out.append("ระยะทาง: ")
-                        .append(oneDecimal(leg2Km))
+                        .append(oneDecimal(leg2Route.first))
                         .append(" กม.\n")
                     out.append("เวลาโดยประมาณ: ")
-                        .append(leg2Eta)
+                        .append(leg2Route.second)
                         .append(" นาที\n")
+                } else {
+                    out.append("⚠️ คำนวณระยะทางถนนจริงไม่ได้\n")
+                }
+
+                if (leg1Route != null && leg2Route != null) {
+                    val totalKm = leg1Route.first + leg2Route.first
+                    val totalEta = leg1Route.second + leg2Route.second
 
                     out.append("\n📊 รวมทั้งหมด\n")
                     out.append("ระยะทาง: ")
@@ -335,14 +353,18 @@ class MainActivity : ComponentActivity() {
                     out.append("เวลาโดยประมาณ: ")
                         .append(totalEta)
                         .append(" นาที\n")
-
-                    out.append("\n⚠️ ระยะทางด้านบนเป็นระยะเส้นตรงโดยประมาณ ไม่ใช่ระยะถนนจริง\n")
-                    out.append("⏱️ เวลาใช้อัตราเฉลี่ย 25 กม./ชม. และยังไม่รวมรถติด\n")
-
-                    navigate.isEnabled = true
-                    status.text = "✅ วิเคราะห์ 3 จุดเสร็จแล้ว • GPS ปัจจุบันพร้อมใช้งาน"
                 } else {
-                    out.append("\n⚠️ หาได้ไม่ครบ 3 พิกัด • ตรวจข้อความ OCR หรือสถานที่อีกครั้ง")
+                    out.append("\n📊 รวมทั้งหมด\n")
+                    out.append("⚠️ ยังรวมระยะทางไม่ได้ เพราะเส้นทางถนนจริงไม่ครบ\n")
+                }
+
+                out.append("\n⚠️ ระยะทางและเวลาเส้นทางด้านบนมาจากถนนจริงผ่าน OSRM\n")
+                out.append("ไม่ใช้ระยะเส้นตรงแทน และหากหาเส้นทางไม่ได้จะแจ้งเตือนแทน\n")
+
+                if (fromAddress != null && toAddress != null) {
+                    navigate.isEnabled = true
+                    status.text = "✅ วิเคราะห์ 3 จุด + ระยะทางถนนจริงเสร็จแล้ว"
+                } else {
                     status.text = "⚠️ หา GPS/จุดรับ/จุดส่งได้ไม่ครบ"
                 }
 
@@ -352,6 +374,56 @@ class MainActivity : ComponentActivity() {
                 analyze.isEnabled = !pickup.isNullOrBlank() && !dropoff.isNullOrBlank()
             }
         }.start()
+    }
+
+    private fun fetchRoadRoute(
+        startLat: Double,
+        startLon: Double,
+        endLat: Double,
+        endLon: Double
+    ): Pair<Double, Int>? {
+        return try {
+            val url = URL(
+                "https://router.project-osrm.org/route/v1/driving/" +
+                    "$startLon,$startLat;$endLon,$endLat" +
+                    "?overview=false&steps=false"
+            )
+
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15000
+                readTimeout = 20000
+                setRequestProperty("User-Agent", "RiderRouteAI/0.8.0")
+            }
+
+            try {
+                if (connection.responseCode !in 200..299) return null
+
+                val body = connection.inputStream.bufferedReader().use { it.readText() }
+                val root = JSONObject(body)
+
+                if (root.optString("code") != "Ok") return null
+
+                val routes = root.optJSONArray("routes") ?: return null
+                if (routes.length() == 0) return null
+
+                val route = routes.getJSONObject(0)
+                val meters = route.optDouble("distance", Double.NaN)
+                val seconds = route.optDouble("duration", Double.NaN)
+
+                if (!meters.isFinite() || !seconds.isFinite()) return null
+                if (meters <= 0.0 || seconds < 0.0) return null
+
+                val km = meters / 1000.0
+                val minutes = (seconds / 60.0).roundToInt().coerceAtLeast(1)
+
+                Pair(km, minutes)
+            } finally {
+                connection.disconnect()
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     @Suppress("DEPRECATION")

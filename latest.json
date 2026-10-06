@@ -1,6 +1,6 @@
 {
-  "versionCode": 9,
-  "versionName": "0.7.1",
+  "versionCode": 10,
+  "versionName": "0.8.0",
   "apkUrl": "https://github.com/kwanene08-ux/RiderRouteAI/releases/latest/download/RiderRouteAI.apk",
-  "releaseNotes": "RiderRouteAI V0.7.1 — แสดง 3 จุด: ปัจจุบัน → จุดรับ → จุดส่ง พร้อมระยะทาง/เวลาแต่ละช่วง รวมทั้งหมด และข้อมูลน้ำท่วมล่าสุดจาก กทม."
+  "releaseNotes": "RiderRouteAI V0.8.0 — คำนวณระยะทางถนนจริงจากตำแหน่งปัจจุบัน → จุดรับ → จุดส่งด้วย OSRM ไม่ใช้ระยะเส้นตรงแทน"
 }
